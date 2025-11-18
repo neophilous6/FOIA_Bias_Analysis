@@ -35,7 +35,7 @@ requirements.txt        # Convenience dependency list
 
    ```bash
    export OPENAI_API_KEY="sk-..."
-   export MUCKROCK_API_TOKEN="mr-..."  # token from https://www.muckrock.com/api/
+   export MUCKROCK_API_TOKEN="mr-..."
    ```
 
 3. **Run the CLI** to process sources and build labeled datasets:
@@ -54,22 +54,6 @@ requirements.txt        # Convenience dependency list
 
 4. **Review outputs** in `data/processed/` (per-source labeled parquet files) and
    inspect logs under `logs/`.
-
-### Troubleshooting
-
-- **`ImportError: cannot import name 'MuckRockClient'`** – this repository ships its
-  own lightweight `SimpleMuckRockClient` and no longer depends on the legacy
-  `python-muckrock` package. If you previously installed that package globally, pip may
-  still try to import it before the local module updates. Fix it by reinstalling this
-  project (`pip install -e .` or `pip install -r requirements.txt`) and, if necessary,
-  uninstalling the stray dependency:
-
-  ```bash
-  pip uninstall python-muckrock
-  ```
-
-  After reinstalling, re-run `python main.py --help` to confirm the CLI imports cleanly
-  with the bundled HTTP client.
 
 ## Core pipeline stages
 
