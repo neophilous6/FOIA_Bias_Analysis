@@ -35,13 +35,8 @@ requirements.txt        # Convenience dependency list
 
    ```bash
    export OPENAI_API_KEY="sk-..."
-   # Optional but faster: token from https://www.muckrock.com/api/
    export MUCKROCK_API_TOKEN="mr-..."
    ```
-
-   > The pipeline can read public MuckRock documents without a token as long as the
-   > client throttles itself to ~1 request/second. Provide a token if you have one to
-   > avoid the built-in rate limit and speed up ingestion.
 
 3. **Run the CLI** to process sources and build labeled datasets:
 
@@ -60,48 +55,7 @@ requirements.txt        # Convenience dependency list
 4. **Review outputs** in `data/processed/` (per-source labeled parquet files) and
    inspect logs under `logs/`.
 
-### Troubleshooting
-
-- **`ImportError: cannot import name 'MuckRockClient'`** – this repository ships its
-  own lightweight `SimpleMuckRockClient` and no longer depends on the legacy
-  `python-muckrock` package. If you previously installed that package globally, pip may
-  still try to import it before the local module updates. Fix it by reinstalling this
-  project (`pip install -e .` or `pip install -r requirements.txt`) and, if necessary,
-  uninstalling the stray dependency:
-
-  ```bash
-  pip uninstall python-muckrock
-  ```
-
-  After reinstalling, re-run `python main.py --help` to confirm the CLI imports cleanly
-  with the bundled HTTP client.
-
-- **`ERROR: Could not find a version that satisfies the requirement python-muckrock>=0.5.0`** –
-  this message means pip is reading an **old requirements file** (or cached wheel) that
-  still referenced the now-removed `python-muckrock` dependency. Make sure you are on the
-  latest commit (pull or reclone), then clear the cached requirement by uninstalling it
-  and reinstalling from the fresh repo state:
-
-  ```bash
-  pip uninstall python-muckrock  # safe even if it is not currently installed
-  pip install -r requirements.txt
-  ```
-
-  If the error persists, wipe pip's cache (`pip cache purge`) or create a brand-new
-  virtual environment so pip cannot reuse the stale dependency metadata.
-
-- **Codespaces / limited disk environments** – the ingestion step caches every PDF and
-  CSV it downloads (often multiple gigabytes). If you are running inside GitHub
-  Codespaces or any environment with <30 GB free space, consider disabling sources you
-  do not need (`sources.*.enabled`), reducing `sources.muckrock.max_requests`, or
-  pointing the `download_dir` paths to a mounted volume with more space before running
-  `python main.py run`.
-
 ## Core pipeline stages
-
-> **Temporal scope:** The default configuration only processes FOIA material through the
-> end of the Biden administration (January 20, 2025). Requests or disclosures after that
-> date are ignored so the analysis focuses on administrations with complete data.
 
 1. **Ingestion**: Pull FOIA data from MuckRock, agency logs, reading rooms, and FOIA.gov
    annual stats. Each source module handles pagination, download directories, and
@@ -148,8 +102,8 @@ and year fixed effects plus clustered standard errors.
 | Agency | Endpoint URL | Contents |
 | --- | --- | --- |
 | Office of Information Policy (Department of Justice) | https://www.justice.gov/oip/available-documents-oip | FOIA logs (monthly CSV/PDF) for OIP component |
-| DOJ (older logs) | https://www.justice.gov/oip/older-foia-logs | Historical FOIA logs (2012-2024) |
-| Department of Health & Human Services (HHS) | https://www.hhs.gov/foia/electronic-reading-room/foia-logs/index.html | FOIA logs (2017-2024) |
+| DOJ (older logs) | https://www.justice.gov/oip/older-foia-logs | Historical FOIA logs (2012-2023) |
+| Department of Health & Human Services (HHS) | https://www.hhs.gov/foia/electronic-reading-room/foia-logs/index.html | FOIA logs (2017-2023) |
 | National Archives and Records Administration (NARA) | https://www.archives.gov/foia/electronic-reading-room | Frequently requested + reading-room disclosures |
 | Defense Intelligence Agency (DIA) | https://www.dia.mil/FOIA/FOIA-Electronic-Reading-Room/ | Reading room + request logs |
 | United States Secret Service (USSS) | https://www.secretservice.gov/foia/foia-reading-library | FOIA logs + reading library |

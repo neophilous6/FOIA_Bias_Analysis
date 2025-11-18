@@ -10,7 +10,7 @@ ADMIN_PERIODS = [
     ("Bush", "R", date(2001, 1, 20), date(2009, 1, 20)),
     ("Obama", "D", date(2009, 1, 20), date(2017, 1, 20)),
     ("Trump", "R", date(2017, 1, 20), date(2021, 1, 20)),
-    ("Biden", "D", date(2021, 1, 20), date(2025, 1, 20)),
+    ("Biden", "D", date(2021, 1, 20), date(2100, 1, 20)),
 ]
 
 

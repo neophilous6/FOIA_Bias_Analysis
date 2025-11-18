@@ -16,6 +16,7 @@ dependencies = [
     "statsmodels>=0.14",
     "scikit-learn>=1.4",
     "openai>=1.14",
+    "python-muckrock>=0.5.0",
     "typer>=0.9",
     "pyyaml>=6.0",
     "tqdm>=4.66",
