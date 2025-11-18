@@ -10,7 +10,6 @@ from tqdm import tqdm
 
 from foia_bias.analysis.aggregate import prepare_for_analysis
 from foia_bias.analysis.models import run_favorability_model, run_wrongdoing_model
-from foia_bias.data_sources.base import DocumentRecord
 from foia_bias.data_sources.foia_gov_client import FOIAGovClient
 from foia_bias.data_sources.logs_downloader import FOIALogsDownloader
 from foia_bias.data_sources.muckrock_client import MuckRockIngestor
@@ -60,29 +59,10 @@ class Pipeline:
         ingestor = FOIALogsDownloader(source_cfg)
         records = []
         for record in tqdm(list(ingestor.fetch()), desc="Agency logs"):
-            parquet_path = Path(record.files[0]["path"])
-            if not parquet_path.exists():
-                self.logger.warning("Agency log parquet missing at %s", parquet_path)
-                continue
-            df = pd.read_parquet(parquet_path)
-            for idx, row in df.iterrows():
-                text = self.render_log_row_text(row)
-                if not text.strip():
-                    continue
-                row_record = DocumentRecord(
-                    source=record.source,
-                    request_id=f"{record.request_id}_{idx}",
-                    agency=record.agency,
-                    title=self.infer_log_row_title(row, record.title, idx),
-                    description=None,
-                    date_submitted=None,
-                    date_done=self.infer_log_row_date(row),
-                    requester=None,
-                    files=record.files,
-                )
-                labeled = self.label_text(text, row_record)
-                if labeled:
-                    records.append(labeled)
+            text = Path(record.files[0]["path"]).read_text(encoding="utf-8")
+            labeled = self.label_text(text, record)
+            if labeled:
+                records.append(labeled)
         self.save_records(records, "agency_logs")
 
     def process_reading_rooms(self) -> None:
@@ -178,53 +158,6 @@ class Pipeline:
         if pre_cfg.get("use_embedding_filter"):
             self.logger.warning("Embedding prefilter enabled but no trained classifier is provided. Skipping.")
         return False
-
-    def render_log_row_text(self, row: pd.Series) -> str:
-        parts: List[str] = []
-        for column, value in row.items():
-            if pd.isna(value):
-                continue
-            value_str = str(value).strip()
-            if not value_str:
-                continue
-            parts.append(f"{column}: {value_str}")
-        return "\n".join(parts)
-
-    def infer_log_row_date(self, row: pd.Series) -> Optional[str]:
-        date_columns = [
-            "date",
-            "closed",
-            "completed",
-            "response",
-            "decision",
-            "released",
-        ]
-        for column, value in row.items():
-            if not isinstance(column, str):
-                continue
-            lowered = column.lower()
-            if not any(token in lowered for token in date_columns):
-                continue
-            parsed = pd.to_datetime(value, errors="coerce")
-            if pd.isna(parsed):
-                continue
-            return parsed.date().isoformat()
-        return None
-
-    def infer_log_row_title(self, row: pd.Series, fallback: Optional[str], idx: int) -> Optional[str]:
-        title_hints = ["subject", "summary", "title", "description", "records", "topic"]
-        for column, value in row.items():
-            if not isinstance(column, str):
-                continue
-            lowered = column.lower()
-            if not any(hint in lowered for hint in title_hints):
-                continue
-            value_str = str(value).strip()
-            if value_str:
-                return value_str
-        if fallback:
-            return f"{fallback} (row {idx})"
-        return f"Agency log row {idx}"
 
     def save_records(self, records: List[dict], source: str) -> None:
         if not records:
