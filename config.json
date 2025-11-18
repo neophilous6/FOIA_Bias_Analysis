@@ -1,0 +1,171 @@
+{
+  "experiment": {
+    "name": "foia_partisan_bias_v1",
+    "description": "Automated LLM-based classification of FOIA disclosures for partisan bias analysis.",
+    "seed": 42
+  },
+  "llm": {
+    "classifier_model": "gpt-5.1-thinking",
+    "embedding_model": "text-embedding-3-large",
+    "max_chars_per_doc": 20000,
+    "concurrency": {
+      "max_parallel_requests": 8,
+      "min_seconds_between_batches": 1.0
+    },
+    "retries": {
+      "max_attempts": 3,
+      "backoff_seconds": 2.0
+    }
+  },
+  "prefilter": {
+    "keyword_threshold": 1,
+    "use_embedding_filter": true,
+    "embedding_filter": {
+      "political_probability_threshold": 0.6
+    },
+    "auto_label_non_political_if_filtered_out": true
+  },
+  "classification_thresholds": {
+    "wrongdoing_probability_cutoff": 0.5,
+    "favorability": {
+      "neutral_band": 0.1,
+      "negative_cutoff": -0.3,
+      "positive_cutoff": 0.3
+    },
+    "min_relevance_for_analysis": "low"
+  },
+  "sources": {
+    "processing_priority": [
+      "muckrock",
+      "agency_logs",
+      "reading_rooms",
+      "foia_gov_annual"
+    ],
+    "muckrock": {
+      "enabled": true,
+      "api_token_env_var": "MUCKROCK_API_TOKEN",
+      "username_env_var": "MUCKROCK_USERNAME",
+      "password_env_var": "MUCKROCK_PASSWORD",
+      "max_requests": 10000,
+      "start_date": "2010-01-01",
+      "end_date": null,
+      "download_dir": "data/muckrock/raw",
+      "text_cache_dir": "data/muckrock/text"
+    },
+    "agency_logs": {
+      "enabled": true,
+      "agencies": [
+        {
+          "id": "doj",
+          "name": "Department of Justice",
+          "url": "https://example.gov/foia/doj_logs_2010_2024.csv",
+          "log_type": "csv",
+          "enabled": true
+        },
+        {
+          "id": "state",
+          "name": "Department of State",
+          "url": "https://example.gov/foia/state_logs_2010_2024.xlsx",
+          "log_type": "xlsx",
+          "enabled": true
+        },
+        {
+          "id": "dhs",
+          "name": "Department of Homeland Security",
+          "url": "https://example.gov/foia/dhs_logs_2010_2024.csv",
+          "log_type": "csv",
+          "enabled": false
+        }
+      ],
+      "output_dir": "data/agency_logs",
+      "text_cache_dir": "data/agency_text"
+    },
+    "reading_rooms": {
+      "enabled": true,
+      "endpoints": [
+        {
+          "id": "state_frus",
+          "name": "State Department Reading Room",
+          "base_url": "https://example.state.gov/foia-reading-room",
+          "pagination_param": "page",
+          "max_pages": 100,
+          "enabled": true
+        },
+        {
+          "id": "epa_foia",
+          "name": "EPA FOIA Reading Room",
+          "base_url": "https://example.epa.gov/foia-reading-room",
+          "pagination_param": "page",
+          "max_pages": 50,
+          "enabled": false
+        }
+      ],
+      "download_dir": "data/reading_rooms/raw",
+      "text_cache_dir": "data/reading_rooms/text"
+    },
+    "foia_gov_annual": {
+      "enabled": true,
+      "base_url": "https://www.foia.gov/api/annual_report",
+      "years": [
+        2010,
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023
+      ],
+      "output_dir": "data/foia_gov"
+    }
+  },
+  "processing": {
+    "text_extraction": {
+      "ocr_engine": "tesseract",
+      "use_ocr_if_extracted_text_too_short": true,
+      "min_text_length_for_no_ocr": 1000
+    },
+    "admin_mapping": {
+      "use_decision_date_field": "date_done",
+      "mark_transition_period_months": 6
+    },
+    "deduplication": {
+      "enabled": true,
+      "method": "hash",
+      "content_hash_fields": [
+        "text"
+      ],
+      "min_length_for_dedup": 500
+    }
+  },
+  "storage": {
+    "labeled_output_dir": "data/processed",
+    "labeled_file_pattern": "labeled_{source}.parquet",
+    "database": {
+      "enabled": false,
+      "uri_env_var": "FOIA_DB_URI",
+      "table_name": "foia_partisan_labels"
+    }
+  },
+  "analysis": {
+    "include_only_with_admin_party": true,
+    "min_year": 2010,
+    "max_year": 2099,
+    "regression": {
+      "include_agency_fixed_effects": true,
+      "include_year_fixed_effects": true,
+      "cluster_se_by": "agency"
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "log_dir": "logs",
+    "log_to_stdout": true
+  }
+}
