@@ -112,4 +112,4 @@ and year fixed effects plus clustered standard errors.
 
 ## License
 
-MIT License. See `LICENSE` (add your own terms as needed).
+MIT License. See `LICENSE`
