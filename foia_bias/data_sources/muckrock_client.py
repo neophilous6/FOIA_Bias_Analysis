@@ -53,9 +53,43 @@ class SimpleMuckRockClient:
             params = None  # after first request, pagination URLs include params
             page_idx += 1
 
-    def iter_requests(self, **params: Any) -> Iterator[Dict[str, Any]]:
-        """Stream paginated request objects from the REST API."""
-        yield from self._paged_get(f"{self.base_url}/requests/", params)
+    def iter_request_pages(
+        self,
+        start_page: int = 1,
+        **params: Any,
+    ) -> Iterator[tuple[int, list[Dict[str, Any]]]]:
+        """Yield one page of request objects at a time starting from `start_page`."""
+
+        params = {k: v for k, v in (params or {}).items() if v is not None}
+        params.setdefault("page_size", 100)
+        if start_page > 1:
+            params["page"] = start_page
+        url = f"{self.base_url}/requests/"
+        page_idx = start_page
+        while url:
+            if self.rate_limit_seconds > 0:
+                time.sleep(self.rate_limit_seconds)
+            logger.info("Requesting %s page %s with params=%s", url, page_idx, params or "{}")
+            resp = self.session.get(url, params=params if "?" not in url else None, timeout=60)
+            resp.raise_for_status()
+            payload = resp.json()
+            results = payload.get("results", [])
+            logger.info("Received %s results from %s page %s", len(results), url, page_idx)
+            if not results:
+                break
+            yield page_idx, results
+            url = payload.get("next")
+            params = None
+            page_idx += 1
+            if not url:
+                break
+
+    def iter_requests(self, start_page: int = 1, **params: Any) -> Iterator[tuple[int, Dict[str, Any]]]:
+        """Stream individual request objects paired with their source page."""
+
+        for page_idx, rows in self.iter_request_pages(start_page=start_page, **params):
+            for row in rows:
+                yield page_idx, row
 
     def iter_communications(self, request_id: str) -> Iterator[Dict[str, Any]]:
         """Iterate over every communication for a given request."""
@@ -112,8 +146,9 @@ class MuckRockIngestor(BaseIngestor):
         # file.
         self._file_cache: dict[str, Path] = {}
 
-    def fetch(self) -> Iterator[DocumentRecord]:
-        """Yield completed requests that already have releasable files."""
+    def fetch_pages(self, start_page: int = 1) -> Iterator[tuple[int, list[DocumentRecord]]]:
+        """Yield batches of records keyed by their originating request page."""
+
         params: Dict[str, Any] = {
             "status": "done",
             "has_files": True,
@@ -122,37 +157,65 @@ class MuckRockIngestor(BaseIngestor):
         if self.start_date:
             params["updated_after"] = self.start_date
         count = 0
-        for req in self._iter_requests(params):
-            if self.end_date and req.get("date_done") and req["date_done"] > self.end_date:
-                continue
-            documents = self._extract_documents(req)
-            if not documents:
-                logger.info("Request %s has no released documents; skipping", req.get("id"))
-                continue
-            logger.info(
-                "Fetched request %s (%s) with %d file(s) from %s",
-                req.get("id"),
-                req.get("title"),
-                len(documents),
-                req.get("agency_name"),
-            )
-            yield DocumentRecord(
-                source="muckrock",
-                request_id=str(req["id"]),
-                agency=req.get("agency_name"),
-                title=req.get("title"),
-                description=req.get("short_description"),
-                date_submitted=req.get("date_submitted"),
-                date_done=req.get("date_done"),
-                requester=req.get("user_name"),
-                files=documents,
-            )
-            count += 1
+        for page_num, requests in self._iter_request_pages(params, start_page):
+            page_records: list[DocumentRecord] = []
+            for req in requests:
+                if self.end_date and req.get("date_done") and req["date_done"] > self.end_date:
+                    continue
+                documents = self._extract_documents(req)
+                if not documents:
+                    logger.info("Request %s has no released documents; skipping", req.get("id"))
+                    continue
+                logger.info(
+                    "Fetched request %s (%s) with %d file(s) from %s",
+                    req.get("id"),
+                    req.get("title"),
+                    len(documents),
+                    req.get("agency_name"),
+                )
+                page_records.append(
+                    DocumentRecord(
+                        source="muckrock",
+                        request_id=str(req["id"]),
+                        agency=req.get("agency_name"),
+                        title=req.get("title"),
+                        description=req.get("short_description"),
+                        date_submitted=req.get("date_submitted"),
+                        date_done=req.get("date_done"),
+                        requester=req.get("user_name"),
+                        files=documents,
+                    )
+                )
+                count += 1
+                if count >= self.max_requests:
+                    break
+            if page_records:
+                yield page_num, page_records
             if count >= self.max_requests:
                 break
 
-    def _iter_requests(self, params: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
-        yield from self.client.iter_requests(**params)
+    def fetch(self, start_page: int = 1) -> Iterator[DocumentRecord]:
+        """Yield completed requests that already have releasable files."""
+
+        for _, records in self.fetch_pages(start_page=start_page):
+            for record in records:
+                yield record
+
+    def _iter_request_pages(
+        self,
+        params: Dict[str, Any],
+        start_page: int,
+    ) -> Iterable[tuple[int, list[Dict[str, Any]]]]:
+        yield from self.client.iter_request_pages(start_page=start_page, **params)
+
+    def _iter_requests(
+        self,
+        params: Dict[str, Any],
+        start_page: int,
+    ) -> Iterable[Dict[str, Any]]:
+        for _, rows in self._iter_request_pages(params, start_page):
+            for row in rows:
+                yield row
 
     def download_files_for_record(self, record: DocumentRecord) -> list[Path]:
         """Download every PDF referenced in the record and persist it locally."""
@@ -232,11 +295,11 @@ class MuckRockIngestor(BaseIngestor):
     def _extract_documents(self, request_row: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Ensure we always return the list of released documents for a request."""
 
+        request_id = request_row.get("id")
         documents = request_row.get("documents") or request_row.get("files") or []
-        if documents:
+        if documents and request_id:
             return self._materialize_embedded_documents(str(request_id), documents)
 
-        request_id = request_row.get("id")
         if not request_id:
             return []
 

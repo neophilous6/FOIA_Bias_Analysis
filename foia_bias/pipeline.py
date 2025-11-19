@@ -19,6 +19,7 @@ from foia_bias.llm.classifiers import classify_document
 from foia_bias.processing.admin_mapping import get_admin_for_date
 from foia_bias.processing.politics_filter import PARTY_KEYWORDS, is_potentially_partisan
 from foia_bias.processing.text_extraction import extract_text_from_pdf
+from foia_bias.utils.checkpoints import load_checkpoint, save_checkpoint
 from foia_bias.utils.logging_utils import configure_logging, get_logger
 
 
@@ -55,23 +56,56 @@ class Pipeline:
         """Download, extract, and label MuckRock responses."""
         source_cfg = self.config["sources"]["muckrock"]
         ingestor = MuckRockIngestor(source_cfg)
+        state_path = Path(source_cfg.get("state_path", "data/muckrock/state.json"))
+        checkpoint = load_checkpoint(state_path)
+        query_key = {
+            "start_date": source_cfg.get("start_date"),
+            "end_date": source_cfg.get("end_date"),
+        }
+        if checkpoint.get("query_key") != query_key:
+            start_page = 1
+            checkpoint = {}
+            self.logger.info("Starting fresh MuckRock run (filters changed or no checkpoint)")
+        else:
+            start_page = int(checkpoint.get("last_page", 0)) + 1
+            self.logger.info("Resuming MuckRock ingestion from page %s", start_page)
         self.logger.info("Starting MuckRock ingestion (max %s requests)", ingestor.max_requests)
         records = []
-        for idx, record in enumerate(tqdm(ingestor.fetch(), desc="MuckRock requests"), start=1):
+        processed_requests = 0
+        last_checkpointed_page = checkpoint.get("last_page", 0)
+        for page_num, page_records in ingestor.fetch_pages(start_page=start_page):
             self.logger.info(
-                "Processing MuckRock request %s (%s) [%d]", record.request_id, record.title, idx
+                "Processing MuckRock page %s containing %s requests", page_num, len(page_records)
             )
-            paths = ingestor.download_files_for_record(record)
-            if not paths:
-                self.logger.info("Request %s did not yield any downloadable files", record.request_id)
-                continue
-            text = self.combine_texts(paths)
-            labeled = self.label_text(text, record)
-            if labeled:
-                records.append(labeled)
-                self.logger.info("Finished labeling request %s", record.request_id)
-            else:
-                self.logger.info("Skipping request %s because no text was extracted", record.request_id)
+            for record in page_records:
+                processed_requests += 1
+                self.logger.info(
+                    "Processing MuckRock request %s (%s) [total %d]",
+                    record.request_id,
+                    record.title,
+                    processed_requests,
+                )
+                paths = ingestor.download_files_for_record(record)
+                if not paths:
+                    self.logger.info(
+                        "Request %s did not yield any downloadable files", record.request_id
+                    )
+                    continue
+                text = self.combine_texts(paths)
+                labeled = self.label_text(text, record)
+                if labeled:
+                    records.append(labeled)
+                    self.logger.info("Finished labeling request %s", record.request_id)
+                else:
+                    self.logger.info(
+                        "Skipping request %s because no text was extracted", record.request_id
+                    )
+            save_checkpoint(state_path, {"last_page": page_num, "query_key": query_key})
+            last_checkpointed_page = page_num
+            self.logger.info("Checkpointed completion of MuckRock page %s", page_num)
+
+        if processed_requests == 0:
+            self.logger.info("No MuckRock requests processed; checkpoint remains at page %s", last_checkpointed_page)
         self.logger.info("Completed MuckRock ingestion with %s labeled records", len(records))
         self.save_records(records, "muckrock")
 
