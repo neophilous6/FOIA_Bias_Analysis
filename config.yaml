@@ -44,6 +44,7 @@ sources:
     max_requests: 10000
     start_date: "2010-01-01"
     end_date: "2025-01-20"
+    documents_base_url: "https://www.muckrock.com/api_v1"
     rate_limit_seconds: 1.0  # used when no API token is supplied
     download_dir: "data/muckrock/raw"
     text_cache_dir: "data/muckrock/text"

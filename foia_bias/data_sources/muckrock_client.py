@@ -22,9 +22,13 @@ class SimpleMuckRockClient:
         self,
         token: str | None,
         base_url: str = "https://www.muckrock.com/api_v2",
+        documents_base_url: str | None = None,
         rate_limit_seconds: float = 0.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.documents_base_url = (
+            documents_base_url.rstrip("/") if documents_base_url else self.base_url
+        )
         self.session = requests.Session()
         self.rate_limit_seconds = rate_limit_seconds
         if token:
@@ -58,21 +62,61 @@ class SimpleMuckRockClient:
         yield from self._paged_get(f"{self.base_url}/requests/", params)
 
     def iter_documents(self, request_id: str) -> Iterator[Dict[str, Any]]:
-        """Iterate through every released document for a specific request."""
-        url = f"{self.base_url}/requests/{request_id}/documents/"
-        try:
-            yield from self._paged_get(url)
-            return
-        except HTTPError as exc:
-            status = getattr(exc.response, "status_code", None)
-            if status != 404:
+        """Iterate through released documents with multi-endpoint fallbacks."""
+
+        attempts: list[tuple[str, Dict[str, Any] | None]] = []
+        seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
+
+        def _push(url: str | None, params: Dict[str, Any] | None = None) -> None:
+            if not url:
+                return
+            key = (url, tuple(sorted((params or {}).items())))
+            if key in seen:
+                return
+            seen.add(key)
+            attempts.append((url, params))
+
+        # Try the dedicated documents API (v1) first, followed by the v2 path.
+        _push(f"{self.documents_base_url}/requests/{request_id}/documents/")
+        if self.documents_base_url != self.base_url:
+            _push(f"{self.base_url}/requests/{request_id}/documents/")
+
+        # Fallback to the search endpoint that accepts ?request=<id> filters.
+        _push(f"{self.documents_base_url}/documents/", {"request": request_id})
+        if self.documents_base_url != self.base_url:
+            _push(f"{self.base_url}/documents/", {"request": request_id})
+
+        for url, params in attempts:
+            try:
+                docs = list(self._paged_get(url, params))
+            except HTTPError as exc:
+                status = getattr(exc.response, "status_code", None)
+                if status in {401, 403, 404}:
+                    logger.info(
+                        "Documents endpoint %s returned %s for request %s; trying fallback",
+                        url,
+                        status,
+                        request_id,
+                    )
+                    continue
                 raise
+            if not docs:
+                logger.info(
+                    "Documents endpoint %s returned zero files for request %s; trying fallback",
+                    url,
+                    request_id,
+                )
+                continue
             logger.info(
-                "Documents endpoint missing for request %s; falling back to search API",
+                "Retrieved %s documents for request %s via %s",
+                len(docs),
                 request_id,
+                url,
             )
-        fallback_params = {"request": request_id}
-        yield from self._paged_get(f"{self.base_url}/documents/", fallback_params)
+            for doc in docs:
+                yield doc
+            return
+        logger.warning("Unable to retrieve documents for request %s", request_id)
 
     def get_request(self, request_id: str) -> Dict[str, Any]:
         """Fetch the detail view for a request, including embedded documents."""
@@ -95,6 +139,7 @@ class MuckRockIngestor(BaseIngestor):
         self.start_date = config.get("start_date")
         self.end_date = config.get("end_date")
         base_url = config.get("base_url", "https://www.muckrock.com/api_v2")
+        documents_base_url = config.get("documents_base_url", "https://www.muckrock.com/api_v1")
         default_rate = 0.0 if token else 1.0
         self.rate_limit_seconds = float(config.get("rate_limit_seconds", default_rate))
 
@@ -109,6 +154,7 @@ class MuckRockIngestor(BaseIngestor):
         self.client = SimpleMuckRockClient(
             token=token,
             base_url=base_url,
+            documents_base_url=documents_base_url,
             rate_limit_seconds=self.rate_limit_seconds,
         )
 

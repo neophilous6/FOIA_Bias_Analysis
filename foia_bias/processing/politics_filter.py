@@ -31,15 +31,26 @@ PARTY_KEYWORDS = [
     "president",
 ]
 
-# URLs and cache locations for the GovTrack people index, which contains
-# every Senator/Representative in U.S. history.  The dataset is updated
-# periodically, so we cache the downloaded file locally and refresh on
-# demand when the user deletes the cache.
-GOVTRACK_INDEX_URL = os.environ.get(
-    "GOVTRACK_PEOPLE_INDEX_URL", "https://www.govtrack.us/data/us/people/index.json"
+# URLs for the open-source Congress dataset mirrored on GitHub. GovTrack now
+# throttles anonymous bulk downloads from Codespaces-like environments, so we
+# default to the unitedstates/congress-legislators repository instead and cache
+# the merged payload locally.
+CONGRESS_DATA_SOURCES = [
+    os.environ.get(
+        "CONGRESS_LEGISLATORS_CURRENT_URL",
+        "https://raw.githubusercontent.com/unitedstates/congress-legislators/master/legislators-current.json",
+    ),
+    os.environ.get(
+        "CONGRESS_LEGISLATORS_HISTORICAL_URL",
+        "https://raw.githubusercontent.com/unitedstates/congress-legislators/master/legislators-historical.json",
+    ),
+]
+CONGRESS_CACHE_PATH = Path(
+    os.environ.get("CONGRESS_LEGISLATORS_CACHE", "data/cache/congress_legislators.json")
 )
-GOVTRACK_CACHE_PATH = Path(
-    os.environ.get("GOVTRACK_PEOPLE_CACHE", "data/cache/govtrack_people_index.json")
+HTTP_USER_AGENT = os.environ.get(
+    "FOIA_HTTP_USER_AGENT",
+    "foia-bias-analysis/1.0 (+https://github.com/neophilous6/FOIA_Bias_Analysis)",
 )
 CONGRESS_MIN_YEAR = 1993
 CONGRESS_MAX_YEAR = 2025
@@ -52,59 +63,71 @@ STATIC_ACTORS = {
     "republican national committee": "R",
 }
 
-# Presidents and vice presidents do not appear in the GovTrack dataset because
-# it is scoped to congressional roles.  We still want to match these names, so
-# we seed them manually and merge them into the GovTrack-derived dictionary at
-# load time.
-MANUAL_ACTORS = {
+# Presidents and vice presidents do not appear in the congressional dataset,
+# so we seed them manually and merge them into the auto-generated dictionary.
+MANUAL_ACTORS = [
     # Presidents
-    "bill clinton": "D",
-    "george w bush": "R",
-    "barack obama": "D",
-    "donald trump": "R",
-    "joe biden": "D",
-    # Vice Presidents
-    "al gore": "D",
-    "dick cheney": "R",
-    "mike pence": "R",
-    "kamala harris": "D",
-}
+    ("bill clinton", "D"),
+    ("george w bush", "R"),
+    ("barack obama", "D"),
+    ("donald trump", "R"),
+    ("joe biden", "D"),
+    # Vice Presidents (Joe Biden appears twice on purpose; duplicates collapse)
+    ("al gore", "D"),
+    ("dick cheney", "R"),
+    ("joe biden", "D"),
+    ("mike pence", "R"),
+    ("kamala harris", "D"),
+]
 
 
 def _ensure_cache_dir() -> None:
-    GOVTRACK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONGRESS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _download_govtrack_people() -> Dict:
-    """Download the GovTrack index and persist it locally."""
+def _download_congress_people() -> list[Dict]:
+    """Download Congress membership from the GitHub mirror and cache it."""
 
-    LOGGER.info("Downloading GovTrack people index from %s", GOVTRACK_INDEX_URL)
-    resp = requests.get(GOVTRACK_INDEX_URL, timeout=120)
-    resp.raise_for_status()
-    data = resp.json()
+    aggregated: list[Dict] = []
+    for url in CONGRESS_DATA_SOURCES:
+        if not url:
+            continue
+        try:
+            LOGGER.info("Downloading congressional roster from %s", url)
+            resp = requests.get(url, headers={"User-Agent": HTTP_USER_AGENT}, timeout=120)
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, list):
+                aggregated.extend(payload)
+            elif isinstance(payload, dict):
+                aggregated.append(payload)
+        except requests.RequestException as exc:
+            LOGGER.warning("Unable to download %s (%s)", url, exc)
+    if not aggregated:
+        raise RuntimeError("Congressional roster download failed for all sources")
     try:
         _ensure_cache_dir()
-        GOVTRACK_CACHE_PATH.write_text(json.dumps(data))
+        CONGRESS_CACHE_PATH.write_text(json.dumps(aggregated))
     except OSError as exc:  # pragma: no cover - IO heavy
-        LOGGER.warning("Unable to cache GovTrack index at %s: %s", GOVTRACK_CACHE_PATH, exc)
-    return data
+        LOGGER.warning("Unable to cache Congress roster at %s: %s", CONGRESS_CACHE_PATH, exc)
+    return aggregated
 
 
 def _load_people_index() -> Dict:
-    """Load the GovTrack index from cache or download it on demand."""
+    """Load the congressional roster from cache or download on demand."""
 
-    if GOVTRACK_CACHE_PATH.exists():
+    if CONGRESS_CACHE_PATH.exists():
         try:
-            return json.loads(GOVTRACK_CACHE_PATH.read_text())
+            return json.loads(CONGRESS_CACHE_PATH.read_text())
         except json.JSONDecodeError:
-            LOGGER.warning("Cached GovTrack index is corrupt; re-downloading")
+            LOGGER.warning("Cached congressional roster is corrupt; re-downloading")
         except OSError as exc:
-            LOGGER.warning("Unable to read GovTrack cache %s: %s", GOVTRACK_CACHE_PATH, exc)
+            LOGGER.warning("Unable to read Congress cache %s: %s", CONGRESS_CACHE_PATH, exc)
     try:
-        return _download_govtrack_people()
-    except requests.RequestException as exc:
+        return _download_congress_people()
+    except RuntimeError as exc:
         LOGGER.warning(
-            "Failed to download GovTrack data (%s). Political entity detection will be limited.",
+            "Failed to download congressional data (%s). Political entity detection will be limited.",
             exc,
         )
         return {}
@@ -211,11 +234,11 @@ def _collect_name_strings(person: Dict) -> List[str]:
 def load_known_actors(
     min_year: int = CONGRESS_MIN_YEAR, max_year: int = CONGRESS_MAX_YEAR
 ) -> Dict[str, str]:
-    """Build a dictionary of known partisan actors from GovTrack data."""
+    """Build a dictionary of known partisan actors from congressional data."""
 
     people_index = _load_people_index()
     if not people_index:
-        LOGGER.warning("GovTrack data unavailable; returning static actor list only")
+        LOGGER.warning("Congress roster unavailable; returning static actor list only")
         return STATIC_ACTORS.copy()
 
     if isinstance(people_index, dict):
@@ -255,11 +278,11 @@ def load_known_actors(
                     else:
                         actors[variant] = party
     # Add presidents/vice presidents explicitly so we always recognize them.
-    for name, party in MANUAL_ACTORS.items():
+    for name, party in MANUAL_ACTORS:
         for variant in _name_variants(name):
             actors[variant] = party
 
-    LOGGER.info("Loaded %s partisan actors from GovTrack", len(actors))
+    LOGGER.info("Loaded %s partisan actors from congressional data", len(actors))
     return actors
 
 
