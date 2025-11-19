@@ -38,11 +38,11 @@ PARTY_KEYWORDS = [
 CONGRESS_DATA_SOURCES = [
     os.environ.get(
         "CONGRESS_LEGISLATORS_CURRENT_URL",
-        "https://raw.githubusercontent.com/unitedstates/congress-legislators/master/legislators-current.json",
+        "https://unitedstates.github.io/congress-legislators/legislators-current.json",
     ),
     os.environ.get(
         "CONGRESS_LEGISLATORS_HISTORICAL_URL",
-        "https://raw.githubusercontent.com/unitedstates/congress-legislators/master/legislators-historical.json",
+        "https://unitedstates.github.io/congress-legislators/legislators-historical.json",
     ),
 ]
 CONGRESS_CACHE_PATH = Path(
