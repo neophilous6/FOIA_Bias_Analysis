@@ -63,27 +63,32 @@ class Pipeline:
             "end_date": source_cfg.get("end_date"),
         }
         last_page_seen = int(checkpoint.get("last_page", 0)) if checkpoint else 0
+        # `next_page` is the cursor we actually want to start from on a resume,
+        # so if it is present prefer it over recomputing from `last_page`.
+        if checkpoint:
+            start_page = int(checkpoint.get("next_page") or (last_page_seen + 1) or 1)
+        else:
+            start_page = 1
         last_date_done = checkpoint.get("last_date_done")
 
-        # Always resume from the next page if we have any recorded progress.
-        # Even when filters change, a resume is safer than restarting from
-        # page 1 because the MuckRock listing is stable and deduped by file
-        # ID downstream.
-        if last_page_seen > 0:
-            start_page = last_page_seen + 1
+        # Always resume from the stored cursor if we have any recorded
+        # progress—even when filters change—because file-level dedupe keeps the
+        # run idempotent.
+        if start_page > 1 or last_page_seen > 0:
             self.logger.info(
-                "Resuming MuckRock ingestion from page %s (checkpoint=%s, last_date_done=%s)",
+                "Resuming MuckRock ingestion from page %s (checkpoint=%s, last_date_done=%s, raw=%s)",
                 start_page,
                 state_path,
                 last_date_done,
+                checkpoint,
             )
         else:
-            start_page = 1
             checkpoint = {}
             self.logger.info(
                 "Starting fresh MuckRock run (no usable checkpoint found at %s)",
                 state_path,
             )
+
         effective_updated_after = last_date_done or source_cfg.get("start_date")
         self.logger.info(
             "Starting MuckRock ingestion (max %s requests) from page %s, updated_after=%s",
@@ -126,10 +131,13 @@ class Pipeline:
                     self.logger.info(
                         "Skipping request %s because no text was extracted", record.request_id
                     )
+            # Persist the cursor after each page so an interrupted run can
+            # genuinely resume at the next page on restart.
             save_checkpoint(
                 state_path,
                 {
                     "last_page": page_num,
+                    "next_page": page_num + 1,
                     "query_key": query_key,
                     "last_date_done": page_last_date,
                 },
